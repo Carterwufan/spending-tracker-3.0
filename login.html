@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Log in | Spending Tracker</title>
+  <meta name="theme-color" content="#1f6f54">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Spending Tracker">
+  <link rel="manifest" href="{{ url_for('static', filename='manifest.webmanifest') }}">
+  <link rel="icon" href="{{ url_for('static', filename='icon.svg') }}" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='icon.svg') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<main>
+  <header><h1>Spending Tracker</h1></header>
+  <section>
+    <form method="post">
+      <label>Password
+        <input type="password" name="password" required autofocus autocomplete="current-password">
+      </label>
+      {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+      <button type="submit">Log in</button>
+    </form>
+  </section>
+</main>
+<script>
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/service-worker.js").catch((err) => {
+      console.error("Could not register the service worker:", err);
+    });
+  });
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Spending Tracker</title>
+  <meta name="theme-color" content="#1f6f54">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Spending Tracker">
+  <link rel="manifest" href="{{ url_for('static', filename='manifest.webmanifest') }}">
+  <link rel="icon" href="{{ url_for('static', filename='icon.svg') }}" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='icon.svg') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<main>
+  <header>
+    <h1>Spending Tracker</h1>
+    <form method="post" action="{{ url_for('logout') }}">
+      <button class="quiet">Log out</button>
+    </form>
+  </header>
+
+  <section aria-labelledby="total-label">
+    <p id="total-label" class="muted">Total spent</p>
+    <p id="total" class="total">$0.00</p>
+    <ul id="by-category" class="ledger"></ul>
+  </section>
+
+  <section aria-labelledby="add-title">
+    <h2 id="add-title">Add an expense</h2>
+    <form id="add-form" autocomplete="off">
+      <label>Category
+        <input id="category" list="categories" required maxlength="50">
+      </label>
+      <datalist id="categories"></datalist>
+      <label>Amount
+        <input id="amount" type="number" inputmode="decimal" step="0.01" min="0.01" required>
+      </label>
+      <label>Date
+        <input id="date" type="date" required>
+      </label>
+      <label>Note (optional)
+        <input id="note" maxlength="200">
+      </label>
+      <button type="submit">Add expense</button>
+    </form>
+    <p id="msg" role="status"></p>
+  </section>
+
+  <section aria-labelledby="list-title">
+    <h2 id="list-title">All expenses</h2>
+    <ul id="list" class="ledger"></ul>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const money = (n) => n.toLocaleString(undefined, { style: "currency", currency: "USD" });
+
+function localToday() {
+  const d = new Date();
+  d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+  return d.toISOString().slice(0, 10);
+}
+
+function show(text, isError = false) {
+  const el = $("msg");
+  el.textContent = text;
+  el.className = isError ? "error" : "muted";
+}
+
+async function api(path, options) {
+  const res = await fetch(path, options);
+  if (res.status === 401) {
+    location.href = "/login";
+    throw new Error("Please log in again.");
+  }
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "Something went wrong.");
+  return data;
+}
+
+function line(left, sub, amount, extra) {
+  const li = document.createElement("li");
+  const info = document.createElement("div");
+  const name = document.createElement("span");
+  name.textContent = left;
+  info.append(name);
+  if (sub) {
+    const small = document.createElement("small");
+    small.textContent = sub;
+    info.append(small);
+  }
+  const amt = document.createElement("span");
+  amt.className = "amount";
+  amt.textContent = money(amount);
+  li.append(info, amt);
+  if (extra) li.append(extra);
+  return li;
+}
+
+function expenseRow(e) {
+  const del = document.createElement("button");
+  del.className = "quiet danger";
+  del.textContent = "Remove";
+  del.setAttribute("aria-label", `Remove ${e.category} expense of ${money(e.amount)}`);
+  del.onclick = async () => {
+    if (!confirm(`Remove ${e.category} (${money(e.amount)})?`)) return;
+    try {
+      await api(`/api/expenses/${e.id}`, { method: "DELETE" });
+      show("Expense removed.");
+      await refresh();
+    } catch (err) { show(err.message, true); }
+  };
+  return line(e.category, e.note ? `${e.date}, ${e.note}` : e.date, e.amount, del);
+}
+
+async function refresh() {
+  const data = await api("/api/expenses");
+  $("total").textContent = money(data.total);
+  $("by-category").replaceChildren(
+    ...data.by_category.map((c) => line(c.category, "", c.total))
+  );
+  $("categories").replaceChildren(
+    ...data.by_category.map((c) => {
+      const o = document.createElement("option");
+      o.value = c.category;
+      return o;
+    })
+  );
+  if (data.expenses.length) {
+    $("list").replaceChildren(...data.expenses.map(expenseRow));
+  } else {
+    const li = document.createElement("li");
+    li.className = "muted";
+    li.textContent = "No expenses yet. Add your first one above.";
+    $("list").replaceChildren(li);
+  }
+}
+
+$("add-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  try {
+    await api("/api/expenses", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        category: $("category").value,
+        amount: $("amount").value,
+        date: $("date").value,
+        note: $("note").value,
+      }),
+    });
+    $("category").value = "";
+    $("amount").value = "";
+    $("note").value = "";
+    show("Expense added.");
+    await refresh();
+    $("category").focus();
+  } catch (err) { show(err.message, true); }
+});
+
+$("date").value = localToday();
+refresh().catch((err) => show(err.message, true));
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/service-worker.js").catch((err) => {
+      console.error("Could not register the service worker:", err);
+    });
+  });
+}
+</script>
+</body>
+</html>

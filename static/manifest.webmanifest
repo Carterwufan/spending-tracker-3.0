@@ -1,0 +1,19 @@
+{
+  "id": "/",
+  "name": "Spending Tracker",
+  "short_name": "Spending",
+  "description": "Track personal expenses.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f7f6f2",
+  "theme_color": "#1f6f54",
+  "icons": [
+    {
+      "src": "/static/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

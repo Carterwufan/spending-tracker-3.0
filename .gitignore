@@ -1,0 +1,14 @@
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+expenses.db
+expenses.db-shm
+expenses.db-wal
+expenses.txt
