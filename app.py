@@ -1,21 +1,25 @@
 import hmac
 import math
 import os
-import sqlite3
 from datetime import date
 from functools import wraps
 
-from dotenv import load_dotenv
+import psycopg
 from flask import (Flask, g, jsonify, redirect, render_template, request,
-                   send_from_directory, session, url_for)
+                   session, url_for)
+from psycopg.rows import dict_row
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-load_dotenv(os.path.join(BASE_DIR, ".env"))
 
-STATIC_DIR = os.path.join(BASE_DIR, "static")
-DB_PATH = os.environ.get("DB_PATH", os.path.join(BASE_DIR, "expenses.db"))
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(BASE_DIR, ".env"), encoding="utf-8-sig")
+except ImportError:
+    pass  # on a host, settings come from real environment variables
 
-app = Flask(__name__, template_folder=BASE_DIR, static_folder=STATIC_DIR)
+DATABASE_URL = os.environ["DATABASE_URL"]      # required: Neon connection string
+
+app = Flask(__name__)
 app.secret_key = os.environ["SECRET_KEY"]      # required: long random string
 APP_PASSWORD = os.environ["APP_PASSWORD"]      # required: your login password
 app.config.update(
@@ -27,19 +31,23 @@ app.config.update(
 )
 
 SCHEMA = """CREATE TABLE IF NOT EXISTS expenses (
-    id INTEGER PRIMARY KEY,
-    date TEXT NOT NULL,
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    spent_on DATE NOT NULL,
     category TEXT NOT NULL,
     amount_cents INTEGER NOT NULL,
     note TEXT NOT NULL DEFAULT ''
 )"""
 
 
+def connect(**kwargs):
+    # prepare_threshold=None keeps this compatible with Neon's pooled connections.
+    return psycopg.connect(DATABASE_URL, connect_timeout=15,
+                           prepare_threshold=None, **kwargs)
+
+
 def init_db():
-    con = sqlite3.connect(DB_PATH)
-    con.execute(SCHEMA)
-    con.commit()
-    con.close()
+    with connect() as con:   # commits and closes on exit
+        con.execute(SCHEMA)
 
 
 init_db()
@@ -47,8 +55,7 @@ init_db()
 
 def get_db():
     if "db" not in g:
-        g.db = sqlite3.connect(DB_PATH)
-        g.db.row_factory = sqlite3.Row
+        g.db = connect(row_factory=dict_row)
     return g.db
 
 
@@ -57,6 +64,14 @@ def close_db(_exc):
     db = g.pop("db", None)
     if db is not None:
         db.close()
+
+
+@app.errorhandler(psycopg.OperationalError)
+def database_unavailable(_exc):
+    message = "The database is waking up or unavailable. Try again in a moment."
+    if request.path.startswith("/api/"):
+        return jsonify(error=message), 503
+    return message, 503
 
 
 def login_required(view):
@@ -90,16 +105,6 @@ def logout():
     return redirect(url_for("login"))
 
 
-@app.get("/service-worker.js")
-def service_worker():
-    response = send_from_directory(
-        STATIC_DIR, "service-worker.js", mimetype="application/javascript"
-    )
-    response.headers["Service-Worker-Allowed"] = "/"
-    response.headers["Cache-Control"] = "no-cache"
-    return response
-
-
 @app.get("/")
 @login_required
 def index():
@@ -111,8 +116,8 @@ def index():
 def list_expenses():
     db = get_db()
     rows = db.execute(
-        "SELECT id, date, category, amount_cents, note FROM expenses "
-        "ORDER BY date DESC, id DESC"
+        "SELECT id, spent_on, category, amount_cents, note FROM expenses "
+        "ORDER BY spent_on DESC, id DESC"
     ).fetchall()
     by_category = db.execute(
         "SELECT category, SUM(amount_cents) AS cents FROM expenses "
@@ -120,13 +125,14 @@ def list_expenses():
     ).fetchall()
     return jsonify(
         expenses=[
-            {"id": r["id"], "date": r["date"], "category": r["category"],
-             "amount": r["amount_cents"] / 100, "note": r["note"]}
+            {"id": r["id"], "date": r["spent_on"].isoformat(),
+             "category": r["category"], "amount": r["amount_cents"] / 100,
+             "note": r["note"]}
             for r in rows
         ],
         total=sum(r["amount_cents"] for r in rows) / 100,
         by_category=[
-            {"category": r["category"], "total": r["cents"] / 100}
+            {"category": r["category"], "total": int(r["cents"]) / 100}
             for r in by_category
         ],
     )
@@ -156,27 +162,21 @@ def add_expense():
     note = str(data.get("note", "")).strip()[:200]
 
     db = get_db()
-    cur = db.execute(
-        "INSERT INTO expenses (date, category, amount_cents, note) VALUES (?, ?, ?, ?)",
-        (day.isoformat(), category, round(amount * 100), note),
-    )
+    row = db.execute(
+        "INSERT INTO expenses (spent_on, category, amount_cents, note) "
+        "VALUES (%s, %s, %s, %s) RETURNING id",
+        (day, category, round(amount * 100), note),
+    ).fetchone()
     db.commit()
-    return jsonify(id=cur.lastrowid), 201
+    return jsonify(id=row["id"]), 201
 
 
 @app.delete("/api/expenses/<int:expense_id>")
 @login_required
 def delete_expense(expense_id):
     db = get_db()
-    cur = db.execute("DELETE FROM expenses WHERE id = ?", (expense_id,))
+    cur = db.execute("DELETE FROM expenses WHERE id = %s", (expense_id,))
     db.commit()
     if cur.rowcount == 0:
         return jsonify(error="That expense no longer exists."), 404
     return jsonify(ok=True)
-
-
-if __name__ == "__main__":
-    app.run(
-        host=os.environ.get("HOST", "0.0.0.0"),
-        port=int(os.environ.get("PORT", "5000")),
-    )
