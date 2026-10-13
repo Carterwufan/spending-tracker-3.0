@@ -1,8 +1,9 @@
-"""One-time import of expenses.txt (CATEGORY:AMOUNT per line) into Neon.
+"""One-time import of expenses.txt into Neon.
 
 Run once, locally, from this folder:  python import_txt.py
 Needs DATABASE_URL in your .env file. Your old file has no dates, so every
-imported expense gets today's date.
+legacy CATEGORY:AMOUNT entry gets today's date. New entries use
+CATEGORY:AMOUNT:YYYY-MM-DD and keep their recorded date.
 """
 import math
 import os
@@ -48,19 +49,37 @@ with psycopg.connect(DATABASE_URL, connect_timeout=15, prepare_threshold=None) a
             line = line.strip()
             if not line:
                 continue
-            category, sep, amount = line.partition(":")
+            parts = line.split(":", maxsplit=2)
+            if len(parts) not in (2, 3):
+                print(
+                    f"Skipped line {number}: expected "
+                    "CATEGORY:AMOUNT[:YYYY-MM-DD]"
+                )
+                continue
+            category, amount = parts[:2]
             category = " ".join(category.split()).capitalize()
             try:
                 value = float(amount)
+                spent_on = (
+                    today
+                    if len(parts) == 2
+                    else date.fromisoformat(parts[2])
+                )
+                if len(parts) == 3 and spent_on.isoformat() != parts[2]:
+                    raise ValueError
             except ValueError:
                 value = math.nan
-            if not sep or not category or not math.isfinite(value):
-                print(f"Skipped line {number}: expected CATEGORY:AMOUNT")
+                spent_on = today
+            if not category or not math.isfinite(value):
+                print(
+                    f"Skipped line {number}: expected "
+                    "CATEGORY:AMOUNT[:YYYY-MM-DD]"
+                )
                 continue
             con.execute(
                 "INSERT INTO expenses (spent_on, category, amount_cents) "
                 "VALUES (%s, %s, %s)",
-                (today, category, round(value * 100)),
+                (spent_on, category, round(value * 100)),
             )
             imported += 1
 
