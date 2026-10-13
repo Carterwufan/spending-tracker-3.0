@@ -35,7 +35,9 @@ SCHEMA = """CREATE TABLE IF NOT EXISTS expenses (
     spent_on DATE NOT NULL,
     category TEXT NOT NULL,
     amount_cents INTEGER NOT NULL,
-    note TEXT NOT NULL DEFAULT ''
+    note TEXT NOT NULL DEFAULT '',
+    transaction_type TEXT NOT NULL DEFAULT 'expense'
+        CHECK (transaction_type IN ('income', 'expense'))
 )"""
 
 
@@ -48,6 +50,11 @@ def connect(**kwargs):
 def init_db():
     with connect() as con:   # commits and closes on exit
         con.execute(SCHEMA)
+        con.execute(
+            "ALTER TABLE expenses ADD COLUMN IF NOT EXISTS transaction_type "
+            "TEXT NOT NULL DEFAULT 'expense' "
+            "CHECK (transaction_type IN ('income', 'expense'))"
+        )
 
 
 init_db()
@@ -116,24 +123,98 @@ def index():
 def list_expenses():
     db = get_db()
     rows = db.execute(
-        "SELECT id, spent_on, category, amount_cents, note FROM expenses "
+        "SELECT id, spent_on, category, amount_cents, note, transaction_type "
+        "FROM expenses "
         "ORDER BY spent_on DESC, id DESC"
     ).fetchall()
     by_category = db.execute(
         "SELECT category, SUM(amount_cents) AS cents FROM expenses "
+        "WHERE transaction_type = 'expense' "
         "GROUP BY category ORDER BY cents DESC"
     ).fetchall()
+    transactions = [
+        {"id": r["id"], "date": r["spent_on"].isoformat(),
+         "category": r["category"], "amount": r["amount_cents"] / 100,
+         "note": r["note"], "type": r["transaction_type"]}
+        for r in rows
+    ]
+    expenses = [transaction for transaction in transactions
+                if transaction["type"] == "expense"]
     return jsonify(
-        expenses=[
-            {"id": r["id"], "date": r["spent_on"].isoformat(),
-             "category": r["category"], "amount": r["amount_cents"] / 100,
-             "note": r["note"]}
-            for r in rows
-        ],
-        total=sum(r["amount_cents"] for r in rows) / 100,
+        expenses=expenses,
+        transactions=transactions,
+        total=sum(r["amount_cents"] for r in rows
+                  if r["transaction_type"] == "expense") / 100,
         by_category=[
             {"category": r["category"], "total": int(r["cents"]) / 100}
             for r in by_category
+        ],
+    )
+
+
+@app.get("/api/monthly-summary")
+@login_required
+def monthly_summary():
+    month_text = request.args.get("month", date.today().strftime("%Y-%m"))
+    try:
+        year, month_number = (int(part) for part in month_text.split("-"))
+        month_start = date(year, month_number, 1)
+        if (month_start.strftime("%Y-%m") != month_text
+                or (year == 1 and month_number == 1)
+                or (year == date.max.year and month_number == 12)):
+            raise ValueError
+    except (AttributeError, TypeError, ValueError):
+        return jsonify(error="Choose a valid month."), 400
+
+    if month_number == 1:
+        previous_start = date(year - 1, 12, 1)
+    else:
+        previous_start = date(year, month_number - 1, 1)
+    if month_number == 12:
+        next_start = date(year + 1, 1, 1)
+    else:
+        next_start = date(year, month_number + 1, 1)
+
+    db = get_db()
+    rows = db.execute(
+        "SELECT date_trunc('month', spent_on)::date AS month, "
+        "COALESCE(SUM(amount_cents) FILTER "
+        "(WHERE transaction_type = 'income'), 0) AS income_cents, "
+        "COALESCE(SUM(amount_cents) FILTER "
+        "(WHERE transaction_type = 'expense'), 0) AS expense_cents "
+        "FROM expenses WHERE spent_on >= %s AND spent_on < %s "
+        "GROUP BY date_trunc('month', spent_on)",
+        (previous_start, next_start),
+    ).fetchall()
+    months = {
+        row["month"].strftime("%Y-%m"): {
+            "income": int(row["income_cents"]) / 100,
+            "expenses": int(row["expense_cents"]) / 100,
+        }
+        for row in rows
+    }
+
+    def totals_for(month):
+        totals = months.get(month, {"income": 0, "expenses": 0})
+        return {
+            **totals,
+            "net": totals["income"] - totals["expenses"],
+        }
+
+    categories = db.execute(
+        "SELECT category, SUM(amount_cents) AS cents FROM expenses "
+        "WHERE transaction_type = 'expense' AND spent_on >= %s "
+        "AND spent_on < %s GROUP BY category ORDER BY cents DESC",
+        (month_start, next_start),
+    ).fetchall()
+    return jsonify(
+        month=month_text,
+        previous_month=previous_start.strftime("%Y-%m"),
+        current=totals_for(month_text),
+        previous=totals_for(previous_start.strftime("%Y-%m")),
+        by_category=[
+            {"category": row["category"], "total": int(row["cents"]) / 100}
+            for row in categories
         ],
     )
 
@@ -142,6 +223,10 @@ def list_expenses():
 @login_required
 def add_expense():
     data = request.get_json(silent=True) or {}
+
+    transaction_type = data.get("type", "expense")
+    if transaction_type not in ("income", "expense"):
+        return jsonify(error="Choose income or expense."), 400
 
     category = " ".join(str(data.get("category", "")).split()).capitalize()
     if not category or len(category) > 50:
@@ -163,9 +248,10 @@ def add_expense():
 
     db = get_db()
     row = db.execute(
-        "INSERT INTO expenses (spent_on, category, amount_cents, note) "
-        "VALUES (%s, %s, %s, %s) RETURNING id",
-        (day, category, round(amount * 100), note),
+        "INSERT INTO expenses "
+        "(spent_on, category, amount_cents, note, transaction_type) "
+        "VALUES (%s, %s, %s, %s, %s) RETURNING id",
+        (day, category, round(amount * 100), note, transaction_type),
     ).fetchone()
     db.commit()
     return jsonify(id=row["id"]), 201
@@ -180,3 +266,7 @@ def delete_expense(expense_id):
     if cur.rowcount == 0:
         return jsonify(error="That expense no longer exists."), 404
     return jsonify(ok=True)
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)

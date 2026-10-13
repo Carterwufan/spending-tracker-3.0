@@ -3,10 +3,14 @@
 ## Local use
 
 1. Install dependencies with `pip install -r requirements.txt`.
-2. In `.env`, set a long random `SECRET_KEY` and a strong `APP_PASSWORD`.
+2. In `.env`, set `DATABASE_URL` to your PostgreSQL connection string, plus a long random `SECRET_KEY` and a strong `APP_PASSWORD`.
 3. Start the web app with `python app.py`.
 
 The app listens on port 5000 and accepts connections from other devices on your network. Keep the computer running while you use it.
+
+## Track income and compare months
+
+Add each record as either an **Income** or **Expense**, with its date and category. The monthly comparison shows income, spending, and net (income minus spending) for the selected month, alongside the previous month's totals and changes. Existing records are kept and treated as expenses.
 
 ## Host on Render
 

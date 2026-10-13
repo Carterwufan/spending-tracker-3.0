@@ -66,7 +66,8 @@ header form { display: block; }
 
 label { display: grid; gap: 4px; color: var(--muted); font-size: 0.9rem; }
 
-input {
+input,
+select {
   width: 100%;
   padding: 12px;
   font: inherit;
@@ -75,6 +76,33 @@ input {
   border: 1px solid var(--line);
   border-radius: 8px;
 }
+
+.month-picker { max-width: 240px; }
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 16px 0 20px;
+}
+
+.summary-card {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.summary-amount {
+  margin: 4px 0;
+  font-size: 1.35rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.summary-card small { color: var(--muted); }
+.subheading { font-size: 0.95rem; margin: 0 0 8px; }
 
 button {
   padding: 13px 16px;
@@ -105,3 +133,5 @@ button.danger { color: var(--danger); }
 .ledger li > div { flex: 1; min-width: 0; }
 .ledger small { display: block; color: var(--muted); overflow-wrap: anywhere; }
 .amount { font-variant-numeric: tabular-nums; font-weight: 600; text-align: right; }
+.amount.positive { color: var(--accent); }
+.amount.negative { color: var(--danger); }

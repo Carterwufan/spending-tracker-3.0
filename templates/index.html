@@ -22,15 +22,41 @@
     </form>
   </header>
 
-  <section aria-labelledby="total-label">
-    <p id="total-label" class="muted">Total spent</p>
-    <p id="total" class="total">$0.00</p>
+  <section aria-labelledby="summary-title">
+    <h2 id="summary-title">Monthly comparison</h2>
+    <label class="month-picker">Month
+      <input id="month" type="month" required>
+    </label>
+    <div class="summary-grid" aria-live="polite">
+      <article class="summary-card">
+        <p class="muted">Income</p>
+        <p id="income-total" class="summary-amount">$0.00</p>
+        <small id="income-compare" class="muted"></small>
+      </article>
+      <article class="summary-card">
+        <p class="muted">Spent</p>
+        <p id="spent-total" class="summary-amount">$0.00</p>
+        <small id="spent-compare" class="muted"></small>
+      </article>
+      <article class="summary-card">
+        <p class="muted">Net</p>
+        <p id="net-total" class="summary-amount">$0.00</p>
+        <small id="net-compare" class="muted"></small>
+      </article>
+    </div>
+    <h3 class="subheading">Spending by category</h3>
     <ul id="by-category" class="ledger"></ul>
   </section>
 
   <section aria-labelledby="add-title">
-    <h2 id="add-title">Add an expense</h2>
+    <h2 id="add-title">Add a transaction</h2>
     <form id="add-form" autocomplete="off">
+      <label>Type
+        <select id="type" required>
+          <option value="expense">Expense</option>
+          <option value="income">Income</option>
+        </select>
+      </label>
       <label>Category
         <input id="category" list="categories" required maxlength="50">
       </label>
@@ -44,13 +70,13 @@
       <label>Note (optional)
         <input id="note" maxlength="200">
       </label>
-      <button type="submit">Add expense</button>
+      <button type="submit">Add transaction</button>
     </form>
     <p id="msg" role="status"></p>
   </section>
 
   <section aria-labelledby="list-title">
-    <h2 id="list-title">All expenses</h2>
+    <h2 id="list-title">All transactions</h2>
     <ul id="list" class="ledger"></ul>
   </section>
 </main>
@@ -82,7 +108,7 @@ async function api(path, options) {
   return data;
 }
 
-function line(left, sub, amount, extra) {
+function line(left, sub, amount, extra, amountClass = "") {
   const li = document.createElement("li");
   const info = document.createElement("div");
   const name = document.createElement("span");
@@ -94,35 +120,90 @@ function line(left, sub, amount, extra) {
     info.append(small);
   }
   const amt = document.createElement("span");
-  amt.className = "amount";
+  amt.className = `amount ${amountClass}`;
   amt.textContent = money(amount);
   li.append(info, amt);
   if (extra) li.append(extra);
   return li;
 }
 
-function expenseRow(e) {
+function transactionRow(e) {
   const del = document.createElement("button");
   del.className = "quiet danger";
   del.textContent = "Remove";
-  del.setAttribute("aria-label", `Remove ${e.category} expense of ${money(e.amount)}`);
+  del.setAttribute(
+    "aria-label",
+    `Remove ${e.category} ${e.type} of ${money(e.amount)}`
+  );
   del.onclick = async () => {
-    if (!confirm(`Remove ${e.category} (${money(e.amount)})?`)) return;
+    if (!confirm(`Remove ${e.type}: ${e.category} (${money(e.amount)})?`)) return;
     try {
       await api(`/api/expenses/${e.id}`, { method: "DELETE" });
-      show("Expense removed.");
+      show("Transaction removed.");
       await refresh();
     } catch (err) { show(err.message, true); }
   };
-  return line(e.category, e.note ? `${e.date}, ${e.note}` : e.date, e.amount, del);
+  const sign = e.type === "income" ? "+" : "−";
+  const li = line(
+    `${e.category} · ${e.type}`,
+    e.note ? `${e.date}, ${e.note}` : e.date,
+    e.amount,
+    del,
+    e.type === "income" ? "positive" : "negative"
+  );
+  li.querySelector(".amount").textContent = `${sign}${money(e.amount)}`;
+  return li;
+}
+
+function monthLabel(month) {
+  return new Date(`${month}-01T00:00:00`).toLocaleDateString(undefined, {
+    month: "long",
+    year: "numeric",
+  });
+}
+
+function comparisonText(previousAmount, currentAmount, previousMonth) {
+  const difference = currentAmount - previousAmount;
+  let change;
+  if (difference === 0) {
+    change = "no change";
+  } else {
+    change = `${difference > 0 ? "up" : "down"} ${money(Math.abs(difference))}`;
+  }
+  return `${monthLabel(previousMonth)}: ${money(previousAmount)} · ${change}`;
+}
+
+function renderSummary(summary) {
+  const previousMonth = summary.previous_month;
+  $("income-total").textContent = money(summary.current.income);
+  $("spent-total").textContent = money(summary.current.expenses);
+  $("net-total").textContent = money(summary.current.net);
+  $("income-compare").textContent = comparisonText(
+    summary.previous.income, summary.current.income, previousMonth
+  );
+  $("spent-compare").textContent = comparisonText(
+    summary.previous.expenses, summary.current.expenses, previousMonth
+  );
+  $("net-compare").textContent = comparisonText(
+    summary.previous.net, summary.current.net, previousMonth
+  );
+  $("by-category").replaceChildren(
+    ...summary.by_category.map((c) => line(c.category, "", c.total))
+  );
+  if (!summary.by_category.length) {
+    const li = document.createElement("li");
+    li.className = "muted";
+    li.textContent = "No expenses recorded for this month.";
+    $("by-category").replaceChildren(li);
+  }
 }
 
 async function refresh() {
-  const data = await api("/api/expenses");
-  $("total").textContent = money(data.total);
-  $("by-category").replaceChildren(
-    ...data.by_category.map((c) => line(c.category, "", c.total))
-  );
+  const [data, summary] = await Promise.all([
+    api("/api/expenses"),
+    api(`/api/monthly-summary?month=${encodeURIComponent($("month").value)}`),
+  ]);
+  renderSummary(summary);
   $("categories").replaceChildren(
     ...data.by_category.map((c) => {
       const o = document.createElement("option");
@@ -130,15 +211,20 @@ async function refresh() {
       return o;
     })
   );
-  if (data.expenses.length) {
-    $("list").replaceChildren(...data.expenses.map(expenseRow));
+  if (data.transactions.length) {
+    $("list").replaceChildren(...data.transactions.map(transactionRow));
   } else {
     const li = document.createElement("li");
     li.className = "muted";
-    li.textContent = "No expenses yet. Add your first one above.";
+    li.textContent = "No transactions yet. Add your first one above.";
     $("list").replaceChildren(li);
   }
 }
+
+$("month").value = localToday().slice(0, 7);
+$("month").addEventListener("change", () => {
+  refresh().catch((err) => show(err.message, true));
+});
 
 $("add-form").addEventListener("submit", async (ev) => {
   ev.preventDefault();
@@ -147,6 +233,7 @@ $("add-form").addEventListener("submit", async (ev) => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        type: $("type").value,
         category: $("category").value,
         amount: $("amount").value,
         date: $("date").value,
@@ -156,7 +243,7 @@ $("add-form").addEventListener("submit", async (ev) => {
     $("category").value = "";
     $("amount").value = "";
     $("note").value = "";
-    show("Expense added.");
+    show("Transaction added.");
     await refresh();
     $("category").focus();
   } catch (err) { show(err.message, true); }
