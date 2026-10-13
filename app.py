@@ -1,6 +1,6 @@
-import hmac
 import math
 import os
+import secrets
 from datetime import date
 from functools import wraps
 
@@ -8,6 +8,7 @@ import psycopg
 from flask import (Flask, g, jsonify, redirect, render_template, request,
                    session, url_for)
 from psycopg.rows import dict_row
+from werkzeug.security import check_password_hash, generate_password_hash
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -17,14 +18,25 @@ try:
 except ImportError:
     pass  # on a host, settings come from real environment variables
 
-DATABASE_URL = os.environ["DATABASE_URL"]      # required: Neon connection string
+LOCAL_DEV = os.environ.get("LOCAL_DEV") == "1"
+DATABASE_URL = os.environ.get("DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError("Set DATABASE_URL to your Neon PostgreSQL connection string.")
+
+SECRET_KEY = os.environ.get("SECRET_KEY")
+if not SECRET_KEY:
+    if not LOCAL_DEV:
+        raise RuntimeError("Set SECRET_KEY in the production environment.")
+    SECRET_KEY = secrets.token_hex(32)
+
+APP_PASSWORD_HASH = os.environ.get("APP_PASSWORD_HASH")
+if not APP_PASSWORD_HASH:
+    raise RuntimeError("Set APP_PASSWORD_HASH to a Werkzeug password hash.")
 
 app = Flask(__name__)
-app.secret_key = os.environ["SECRET_KEY"]      # required: long random string
-APP_PASSWORD = os.environ["APP_PASSWORD"]      # required: your login password
 app.config.update(
-    # Cookies only travel over HTTPS unless you set LOCAL_DEV=1 for local testing.
-    SESSION_COOKIE_SECURE=os.environ.get("LOCAL_DEV") != "1",
+    SECRET_KEY=SECRET_KEY,
+    SESSION_COOKIE_SECURE=not LOCAL_DEV,
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
     PERMANENT_SESSION_LIFETIME=60 * 60 * 24 * 30,
@@ -97,7 +109,7 @@ def login():
     error = None
     if request.method == "POST":
         supplied = request.form.get("password", "")
-        if hmac.compare_digest(supplied.encode(), APP_PASSWORD.encode()):
+        if check_password_hash(APP_PASSWORD_HASH, supplied):
             session.clear()
             session["auth"] = True
             session.permanent = True
