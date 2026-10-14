@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Create account | Spending Tracker</title>
+  <meta name="theme-color" content="#1f6f54">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<main>
+  <header><h1>Spending Tracker</h1></header>
+  <section>
+    <h2>Create your account</h2>
+    <form method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label>Email
+        <input type="email" name="email" required maxlength="254" autocomplete="email">
+      </label>
+      <label>Password (12 characters minimum)
+        <input type="password" name="password" required minlength="12" maxlength="1024" autocomplete="new-password">
+      </label>
+      <label>Confirm password
+        <input type="password" name="password_confirmation" required minlength="12" maxlength="1024" autocomplete="new-password">
+      </label>
+      {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+      <button type="submit">Create account</button>
+    </form>
+    <nav class="auth-links" aria-label="Account">
+      <a href="{{ url_for('login') }}">Already have an account? Log in</a>
+    </nav>
+  </section>
+</main>
+</body>
+</html>

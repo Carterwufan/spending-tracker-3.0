@@ -52,6 +52,8 @@ section { border-top: 1px solid var(--line); padding: 20px 0; }
 p { margin: 0; }
 .muted { color: var(--muted); }
 .error { color: var(--danger); margin: 8px 0; }
+.auth-links { display: grid; gap: 8px; margin-top: 16px; }
+.auth-description { margin-bottom: 12px; }
 
 .total {
   font-size: 2.6rem;

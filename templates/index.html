@@ -12,12 +12,14 @@
   <link rel="icon" href="{{ url_for('static', filename='icon.svg') }}" type="image/svg+xml">
   <link rel="apple-touch-icon" href="{{ url_for('static', filename='icon.svg') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <meta name="csrf-token" content="{{ csrf_token() }}">
 </head>
 <body>
 <main>
   <header>
     <h1>Spending Tracker</h1>
     <form method="post" action="{{ url_for('logout') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button class="quiet">Log out</button>
     </form>
   </header>
@@ -98,7 +100,9 @@ function show(text, isError = false) {
 }
 
 async function api(path, options) {
-  const res = await fetch(path, options);
+  const headers = new Headers(options && options.headers ? options.headers : {});
+  headers.set("X-CSRF-Token", document.querySelector('meta[name="csrf-token"]').content);
+  const res = await fetch(path, { ...options, headers });
   if (res.status === 401) {
     location.href = "/login";
     throw new Error("Please log in again.");

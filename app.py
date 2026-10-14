@@ -1,8 +1,14 @@
 import math
 import os
+import re
 import secrets
+import hashlib
+import hmac
+import smtplib
 from datetime import date
+from email.message import EmailMessage
 from functools import wraps
+from urllib.parse import urlsplit
 
 import psycopg
 from flask import (Flask, g, jsonify, redirect, render_template, request,
@@ -29,13 +35,47 @@ if not SECRET_KEY:
         raise RuntimeError("Set SECRET_KEY in the production environment.")
     SECRET_KEY = secrets.token_hex(32)
 
-APP_PASSWORD_HASH = os.environ.get("APP_PASSWORD_HASH")
-if not APP_PASSWORD_HASH:
-    raise RuntimeError("Set APP_PASSWORD_HASH to a Werkzeug password hash.")
+SMTP_HOST = os.environ.get("SMTP_HOST")
+SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
+SMTP_USERNAME = os.environ.get("SMTP_USERNAME")
+SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD")
+SMTP_FROM = os.environ.get("SMTP_FROM")
+PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
+if bool(SMTP_USERNAME) != bool(SMTP_PASSWORD):
+    raise RuntimeError("Set both SMTP_USERNAME and SMTP_PASSWORD, or neither.")
+if not LOCAL_DEV:
+    missing_mail_settings = [
+        name for name, value in (
+            ("SMTP_HOST", SMTP_HOST),
+            ("SMTP_FROM", SMTP_FROM),
+            ("PUBLIC_BASE_URL", PUBLIC_BASE_URL),
+        ) if not value
+    ]
+    if missing_mail_settings:
+        raise RuntimeError(
+            "Set the production password-reset settings: "
+            + ", ".join(missing_mail_settings)
+        )
+if PUBLIC_BASE_URL:
+    parsed_base_url = urlsplit(PUBLIC_BASE_URL)
+    if (parsed_base_url.scheme not in ("https", "http")
+            or not parsed_base_url.netloc
+            or parsed_base_url.path not in ("", "/")
+            or parsed_base_url.query
+            or parsed_base_url.fragment
+            or parsed_base_url.username
+            or parsed_base_url.password
+            or (not LOCAL_DEV and parsed_base_url.scheme != "https")):
+        raise RuntimeError(
+            "PUBLIC_BASE_URL must be an HTTPS URL in production."
+        )
+if not 1 <= SMTP_PORT <= 65535:
+    raise RuntimeError("SMTP_PORT must be between 1 and 65535.")
 
 app = Flask(__name__)
 app.config.update(
     SECRET_KEY=SECRET_KEY,
+    MAX_CONTENT_LENGTH=16 * 1024,
     SESSION_COOKIE_SECURE=not LOCAL_DEV,
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
@@ -52,6 +92,24 @@ SCHEMA = """CREATE TABLE IF NOT EXISTS expenses (
         CHECK (transaction_type IN ('income', 'expense'))
 )"""
 
+USERS_SCHEMA = """CREATE TABLE IF NOT EXISTS users (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    email TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    auth_version INTEGER NOT NULL DEFAULT 0,
+    reset_requested_at TIMESTAMPTZ
+)"""
+
+RESET_TOKENS_SCHEMA = """CREATE TABLE IF NOT EXISTS password_reset_tokens (
+    user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    token_hash TEXT NOT NULL UNIQUE,
+    expires_at TIMESTAMPTZ NOT NULL
+)"""
+
+_DUMMY_PASSWORD_HASH = generate_password_hash(
+    secrets.token_urlsafe(32), method="scrypt"
+)
+
 
 def connect(**kwargs):
     # prepare_threshold=None keeps this compatible with Neon's pooled connections.
@@ -61,7 +119,17 @@ def connect(**kwargs):
 
 def init_db():
     with connect() as con:   # commits and closes on exit
+        con.execute(USERS_SCHEMA)
+        con.execute(RESET_TOKENS_SCHEMA)
         con.execute(SCHEMA)
+        con.execute(
+            "ALTER TABLE expenses ADD COLUMN IF NOT EXISTS user_id "
+            "BIGINT REFERENCES users(id) ON DELETE CASCADE"
+        )
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS expenses_user_date_idx "
+            "ON expenses (user_id, spent_on DESC, id DESC)"
+        )
         con.execute(
             "ALTER TABLE expenses ADD COLUMN IF NOT EXISTS transaction_type "
             "TEXT NOT NULL DEFAULT 'expense' "
@@ -96,7 +164,17 @@ def database_unavailable(_exc):
 def login_required(view):
     @wraps(view)
     def wrapped(*args, **kwargs):
-        if not session.get("auth"):
+        user_id = session.get("user_id")
+        if type(user_id) is not int:
+            if request.path.startswith("/api/"):
+                return jsonify(error="Not logged in."), 401
+            return redirect(url_for("login"))
+        user = get_db().execute(
+            "SELECT auth_version FROM users WHERE id = %s", (user_id,)
+        ).fetchone()
+        if (user is None
+                or user["auth_version"] != session.get("auth_version")):
+            session.clear()
             if request.path.startswith("/api/"):
                 return jsonify(error="Not logged in."), 401
             return redirect(url_for("login"))
@@ -104,18 +182,252 @@ def login_required(view):
     return wrapped
 
 
+def csrf_token():
+    token = session.get("_csrf_token")
+    if token is None:
+        token = secrets.token_urlsafe(32)
+        session["_csrf_token"] = token
+    return token
+
+
+@app.context_processor
+def inject_csrf_token():
+    return {"csrf_token": csrf_token}
+
+
+@app.before_request
+def protect_state_changes():
+    if request.method not in ("POST", "PUT", "PATCH", "DELETE"):
+        return None
+    expected = session.get("_csrf_token", "")
+    supplied = request.headers.get("X-CSRF-Token", "")
+    if request.form:
+        supplied = request.form.get("csrf_token", "")
+    if not expected or not supplied or not hmac.compare_digest(expected, supplied):
+        if request.path.startswith("/api/"):
+            return jsonify(error="Invalid request token. Refresh and try again."), 400
+        return "Invalid request token. Refresh and try again.", 400
+    return None
+
+
+@app.after_request
+def set_security_headers(response):
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    return response
+
+
+def valid_email(value):
+    return (
+        len(value) <= 254
+        and re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", value) is not None
+    )
+
+
+def reset_token_hash(token):
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def send_reset_email(email, token):
+    if not SMTP_HOST or not SMTP_FROM:
+        raise RuntimeError(
+            "Password-reset email is not configured. Set SMTP_HOST and SMTP_FROM."
+        )
+    base_url = PUBLIC_BASE_URL or request.url_root.rstrip("/")
+    reset_url = f"{base_url}{url_for('reset_password')}?token={token}"
+    message = EmailMessage()
+    message["Subject"] = "Reset your Spending Tracker password"
+    message["From"] = SMTP_FROM
+    message["To"] = email
+    message.set_content(
+        "A password reset was requested for your Spending Tracker account.\n\n"
+        f"Use this one-time link within 30 minutes:\n{reset_url}\n\n"
+        "If you did not request this, you can ignore this email."
+    )
+
+    if SMTP_PORT == 465:
+        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=10) as smtp:
+            if SMTP_USERNAME:
+                smtp.login(SMTP_USERNAME, SMTP_PASSWORD)
+            smtp.send_message(message)
+    else:
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=10) as smtp:
+            smtp.ehlo()
+            smtp.starttls()
+            smtp.ehlo()
+            if SMTP_USERNAME:
+                smtp.login(SMTP_USERNAME, SMTP_PASSWORD)
+            smtp.send_message(message)
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     error = None
     if request.method == "POST":
+        email = request.form.get("email", "").strip().casefold()
         supplied = request.form.get("password", "")
-        if check_password_hash(APP_PASSWORD_HASH, supplied):
+        user = None
+        if valid_email(email):
+            user = get_db().execute(
+                "SELECT id, password_hash, auth_version FROM users "
+                "WHERE email = %s", (email,)
+            ).fetchone()
+        stored_hash = user["password_hash"] if user else _DUMMY_PASSWORD_HASH
+        password_matches = check_password_hash(stored_hash, supplied)
+        if user and password_matches:
             session.clear()
-            session["auth"] = True
+            session["user_id"] = user["id"]
+            session["auth_version"] = user["auth_version"]
             session.permanent = True
+            csrf_token()
             return redirect(url_for("index"))
-        error = "That password is incorrect."
+        error = "That email or password is incorrect."
     return render_template("login.html", error=error)
+
+
+@app.route("/register", methods=["GET", "POST"])
+def register():
+    error = None
+    if request.method == "POST":
+        email = request.form.get("email", "").strip().casefold()
+        password = request.form.get("password", "")
+        confirmation = request.form.get("password_confirmation", "")
+        if not valid_email(email):
+            error = "Enter a valid email address."
+        elif not 12 <= len(password) <= 1024:
+            error = "Use a password between 12 and 1024 characters."
+        elif password != confirmation:
+            error = "The passwords do not match."
+        else:
+            password_hash = generate_password_hash(password, method="scrypt")
+            row = get_db().execute(
+                "INSERT INTO users (email, password_hash) "
+                "VALUES (%s, %s) ON CONFLICT (email) DO NOTHING "
+                "RETURNING id, auth_version",
+                (email, password_hash),
+            ).fetchone()
+            if row is None:
+                error = "An account for that email may already exist."
+            else:
+                get_db().commit()
+                session.clear()
+                session["user_id"] = row["id"]
+                session["auth_version"] = row["auth_version"]
+                session.permanent = True
+                csrf_token()
+                return redirect(url_for("index"))
+    return render_template("register.html", error=error)
+
+
+@app.route("/forgot-password", methods=["GET", "POST"])
+def forgot_password():
+    message = None
+    if request.method == "POST":
+        email = request.form.get("email", "").strip().casefold()
+        if not valid_email(email):
+            message = (
+                "If an account matches and email delivery is available, "
+                "you will receive a reset link. If it does not arrive, wait "
+                "five minutes before trying again."
+            )
+        else:
+            db = get_db()
+            user = db.execute(
+                "UPDATE users SET reset_requested_at = now() "
+                "WHERE email = %s AND (reset_requested_at IS NULL OR "
+                "reset_requested_at < now() - interval '5 minutes') "
+                "RETURNING id",
+                (email,),
+            ).fetchone()
+            if user:
+                token = secrets.token_urlsafe(32)
+                token_hash = reset_token_hash(token)
+                db.execute(
+                    "INSERT INTO password_reset_tokens "
+                    "(user_id, token_hash, expires_at) "
+                    "VALUES (%s, %s, now() + interval '30 minutes') "
+                    "ON CONFLICT (user_id) DO UPDATE SET "
+                    "token_hash = EXCLUDED.token_hash, "
+                    "expires_at = EXCLUDED.expires_at",
+                    (user["id"], token_hash),
+                )
+                db.commit()
+                try:
+                    send_reset_email(email, token)
+                except (OSError, smtplib.SMTPException, RuntimeError):
+                    app.logger.exception("Could not send password reset email.")
+                    with db.transaction():
+                        revoked = db.execute(
+                            "DELETE FROM password_reset_tokens "
+                            "WHERE user_id = %s AND token_hash = %s "
+                            "RETURNING user_id",
+                            (user["id"], token_hash),
+                        ).fetchone()
+                        if revoked:
+                            db.execute(
+                                "UPDATE users SET reset_requested_at = NULL "
+                                "WHERE id = %s",
+                                (user["id"],),
+                            )
+            message = (
+                "If an account matches and email delivery is available, "
+                "you will receive a reset link. If it does not arrive, wait "
+                "five minutes before trying again."
+            )
+    return render_template(
+        "forgot_password.html", message=message
+    )
+
+
+@app.route("/reset-password", methods=["GET", "POST"])
+def reset_password():
+    token = request.values.get("token", "")
+    is_valid = False
+    if len(token) <= 128:
+        is_valid = get_db().execute(
+            "SELECT 1 FROM password_reset_tokens "
+            "WHERE token_hash = %s AND expires_at > now()",
+            (reset_token_hash(token),),
+        ).fetchone() is not None
+    error = None
+    if request.method == "POST":
+        password = request.form.get("password", "")
+        confirmation = request.form.get("password_confirmation", "")
+        if not is_valid:
+            error = "This reset link is invalid or has expired."
+        elif not 12 <= len(password) <= 1024:
+            error = "Use a password between 12 and 1024 characters."
+        elif password != confirmation:
+            error = "The passwords do not match."
+        else:
+            db = get_db()
+            with db.transaction():
+                reset = db.execute(
+                    "DELETE FROM password_reset_tokens "
+                    "WHERE token_hash = %s AND expires_at > now() "
+                    "RETURNING user_id",
+                    (reset_token_hash(token),),
+                ).fetchone()
+                if reset:
+                    db.execute(
+                        "UPDATE users SET password_hash = %s, "
+                        "auth_version = auth_version + 1, "
+                        "reset_requested_at = NULL WHERE id = %s",
+                        (
+                            generate_password_hash(password, method="scrypt"),
+                            reset["user_id"],
+                        ),
+                    )
+            db.commit()
+            if reset:
+                return render_template("reset_password.html", success=True)
+            error = "This reset link is invalid or has expired."
+            is_valid = False
+    return render_template(
+        "reset_password.html", token=token, valid=is_valid, error=error
+    )
 
 
 @app.post("/logout")
@@ -136,13 +448,15 @@ def list_expenses():
     db = get_db()
     rows = db.execute(
         "SELECT id, spent_on, category, amount_cents, note, transaction_type "
-        "FROM expenses "
-        "ORDER BY spent_on DESC, id DESC"
+        "FROM expenses WHERE user_id = %s "
+        "ORDER BY spent_on DESC, id DESC",
+        (session["user_id"],),
     ).fetchall()
     by_category = db.execute(
         "SELECT category, SUM(amount_cents) AS cents FROM expenses "
-        "WHERE transaction_type = 'expense' "
-        "GROUP BY category ORDER BY cents DESC"
+        "WHERE user_id = %s AND transaction_type = 'expense' "
+        "GROUP BY category ORDER BY cents DESC",
+        (session["user_id"],),
     ).fetchall()
     transactions = [
         {"id": r["id"], "date": r["spent_on"].isoformat(),
@@ -194,9 +508,9 @@ def monthly_summary():
         "(WHERE transaction_type = 'income'), 0) AS income_cents, "
         "COALESCE(SUM(amount_cents) FILTER "
         "(WHERE transaction_type = 'expense'), 0) AS expense_cents "
-        "FROM expenses WHERE spent_on >= %s AND spent_on < %s "
+        "FROM expenses WHERE user_id = %s AND spent_on >= %s AND spent_on < %s "
         "GROUP BY date_trunc('month', spent_on)",
-        (previous_start, next_start),
+        (session["user_id"], previous_start, next_start),
     ).fetchall()
     months = {
         row["month"].strftime("%Y-%m"): {
@@ -215,9 +529,10 @@ def monthly_summary():
 
     categories = db.execute(
         "SELECT category, SUM(amount_cents) AS cents FROM expenses "
-        "WHERE transaction_type = 'expense' AND spent_on >= %s "
+        "WHERE user_id = %s AND transaction_type = 'expense' "
+        "AND spent_on >= %s "
         "AND spent_on < %s GROUP BY category ORDER BY cents DESC",
-        (month_start, next_start),
+        (session["user_id"], month_start, next_start),
     ).fetchall()
     return jsonify(
         month=month_text,
@@ -261,9 +576,10 @@ def add_expense():
     db = get_db()
     row = db.execute(
         "INSERT INTO expenses "
-        "(spent_on, category, amount_cents, note, transaction_type) "
-        "VALUES (%s, %s, %s, %s, %s) RETURNING id",
-        (day, category, round(amount * 100), note, transaction_type),
+        "(user_id, spent_on, category, amount_cents, note, transaction_type) "
+        "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+        (session["user_id"], day, category, round(amount * 100), note,
+         transaction_type),
     ).fetchone()
     db.commit()
     return jsonify(id=row["id"]), 201
@@ -273,7 +589,10 @@ def add_expense():
 @login_required
 def delete_expense(expense_id):
     db = get_db()
-    cur = db.execute("DELETE FROM expenses WHERE id = %s", (expense_id,))
+    cur = db.execute(
+        "DELETE FROM expenses WHERE id = %s AND user_id = %s",
+        (expense_id, session["user_id"]),
+    )
     db.commit()
     if cur.rowcount == 0:
         return jsonify(error="That expense no longer exists."), 404
