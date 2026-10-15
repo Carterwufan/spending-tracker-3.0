@@ -7,9 +7,22 @@
   --on-accent: #ffffff;
   --danger: #a3341f;
   --field: #ffffff;
+  color-scheme: light;
 }
+:root[data-theme="dark"] {
+  --bg: #131815;
+  --text: #e6eae5;
+  --muted: #96a09a;
+  --line: #2c3430;
+  --accent: #5fc79f;
+  --on-accent: #0e1511;
+  --danger: #ff9a86;
+  --field: #1b221e;
+  color-scheme: dark;
+}
+
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme]) {
     --bg: #131815;
     --text: #e6eae5;
     --muted: #96a09a;
@@ -18,6 +31,7 @@
     --on-accent: #0e1511;
     --danger: #ff9a86;
     --field: #1b221e;
+    color-scheme: dark;
   }
 }
 
@@ -38,6 +52,7 @@ main {
 }
 
 header {
+  position: relative;
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -54,6 +69,75 @@ p { margin: 0; }
 .error { color: var(--danger); margin: 8px 0; }
 .auth-links { display: grid; gap: 8px; margin-top: 16px; }
 .auth-description { margin-bottom: 12px; }
+.field-hint { color: var(--muted); font-size: 0.85rem; }
+
+.profile-menu { position: relative; }
+.profile-menu > summary {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--field);
+  cursor: pointer;
+  list-style: none;
+}
+.profile-menu > summary::-webkit-details-marker { display: none; }
+.profile-icon {
+  position: relative;
+  display: block;
+  width: 20px;
+  height: 20px;
+  overflow: hidden;
+  border-radius: 50%;
+  background: var(--muted);
+}
+.profile-icon::before {
+  position: absolute;
+  top: 3px;
+  left: 7px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--field);
+  content: "";
+}
+.profile-icon::after {
+  position: absolute;
+  bottom: -3px;
+  left: 3px;
+  width: 14px;
+  height: 11px;
+  border-radius: 50% 50% 0 0;
+  background: var(--field);
+  content: "";
+}
+.profile-dropdown {
+  position: absolute;
+  z-index: 2;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 176px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--field);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 14%);
+}
+.profile-dropdown form { display: block; }
+.profile-dropdown .menu-item {
+  width: 100%;
+  padding: 10px;
+  color: var(--text);
+  background: transparent;
+  text-align: left;
+  font-weight: 500;
+}
+.profile-dropdown .menu-item:hover { background: var(--bg); }
+
+.comparison-controls { text-align: center; }
+.comparison-controls h2 { margin-bottom: 12px; }
 
 .total {
   font-size: 2.6rem;
@@ -71,6 +155,7 @@ label { display: grid; gap: 4px; color: var(--muted); font-size: 0.9rem; }
 input,
 select {
   width: 100%;
+  height: 52px;
   padding: 12px;
   font: inherit;
   color: var(--text);
@@ -79,7 +164,7 @@ select {
   border-radius: 8px;
 }
 
-.month-picker { max-width: 240px; }
+.month-picker { max-width: 240px; margin: 0 auto; text-align: left; }
 
 .summary-grid {
   display: grid;
