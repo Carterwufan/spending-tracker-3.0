@@ -10,15 +10,3 @@ services:
         generateValue: true
       - key: DATABASE_URL
         sync: false
-      - key: SMTP_HOST
-        sync: false
-      - key: SMTP_PORT
-        value: "587"
-      - key: SMTP_USERNAME
-        sync: false
-      - key: SMTP_PASSWORD
-        sync: false
-      - key: SMTP_FROM
-        sync: false
-      - key: PUBLIC_BASE_URL
-        sync: false

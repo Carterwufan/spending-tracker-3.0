@@ -41,21 +41,10 @@ SMTP_USERNAME = os.environ.get("SMTP_USERNAME")
 SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD")
 SMTP_FROM = os.environ.get("SMTP_FROM")
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
-if bool(SMTP_USERNAME) != bool(SMTP_PASSWORD):
-    raise RuntimeError("Set both SMTP_USERNAME and SMTP_PASSWORD, or neither.")
-if not LOCAL_DEV:
-    missing_mail_settings = [
-        name for name, value in (
-            ("SMTP_HOST", SMTP_HOST),
-            ("SMTP_FROM", SMTP_FROM),
-            ("PUBLIC_BASE_URL", PUBLIC_BASE_URL),
-        ) if not value
-    ]
-    if missing_mail_settings:
-        raise RuntimeError(
-            "Set the production password-reset settings: "
-            + ", ".join(missing_mail_settings)
-        )
+RESET_EMAIL_CONFIGURED = (
+    bool(SMTP_HOST and SMTP_FROM and PUBLIC_BASE_URL)
+    and bool(SMTP_USERNAME) == bool(SMTP_PASSWORD)
+)
 if PUBLIC_BASE_URL:
     parsed_base_url = urlsplit(PUBLIC_BASE_URL)
     if (parsed_base_url.scheme not in ("https", "http")
@@ -81,6 +70,12 @@ app.config.update(
     SESSION_COOKIE_SAMESITE="Lax",
     PERMANENT_SESSION_LIFETIME=60 * 60 * 24 * 30,
 )
+
+if not RESET_EMAIL_CONFIGURED:
+    app.logger.warning(
+        "Password reset email is disabled; configure SMTP_HOST, SMTP_FROM, "
+        "PUBLIC_BASE_URL, and both SMTP credentials when required."
+    )
 
 SCHEMA = """CREATE TABLE IF NOT EXISTS expenses (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -231,10 +226,8 @@ def reset_token_hash(token):
 
 
 def send_reset_email(email, token):
-    if not SMTP_HOST or not SMTP_FROM:
-        raise RuntimeError(
-            "Password-reset email is not configured. Set SMTP_HOST and SMTP_FROM."
-        )
+    if not RESET_EMAIL_CONFIGURED:
+        raise RuntimeError("Password-reset email is not configured.")
     base_url = PUBLIC_BASE_URL or request.url_root.rstrip("/")
     reset_url = f"{base_url}{url_for('reset_password')}?token={token}"
     message = EmailMessage()
@@ -325,59 +318,66 @@ def register():
 def forgot_password():
     message = None
     if request.method == "POST":
-        email = request.form.get("email", "").strip().casefold()
-        if not valid_email(email):
+        if not RESET_EMAIL_CONFIGURED:
             message = (
-                "If an account matches and email delivery is available, "
-                "you will receive a reset link. If it does not arrive, wait "
-                "five minutes before trying again."
+                "Password reset email is not configured yet. Please contact "
+                "the app administrator for help."
             )
         else:
-            db = get_db()
-            user = db.execute(
-                "UPDATE users SET reset_requested_at = now() "
-                "WHERE email = %s AND (reset_requested_at IS NULL OR "
-                "reset_requested_at < now() - interval '5 minutes') "
-                "RETURNING id",
-                (email,),
-            ).fetchone()
-            if user:
-                token = secrets.token_urlsafe(32)
-                token_hash = reset_token_hash(token)
-                db.execute(
-                    "INSERT INTO password_reset_tokens "
-                    "(user_id, token_hash, expires_at) "
-                    "VALUES (%s, %s, now() + interval '30 minutes') "
-                    "ON CONFLICT (user_id) DO UPDATE SET "
-                    "token_hash = EXCLUDED.token_hash, "
-                    "expires_at = EXCLUDED.expires_at",
-                    (user["id"], token_hash),
+            email = request.form.get("email", "").strip().casefold()
+            if not valid_email(email):
+                message = (
+                    "If an account matches and email delivery is available, "
+                    "you will receive a reset link. If it does not arrive, wait "
+                    "five minutes before trying again."
                 )
-                db.commit()
-                try:
-                    send_reset_email(email, token)
-                except (OSError, smtplib.SMTPException, RuntimeError):
-                    app.logger.exception("Could not send password reset email.")
-                    with db.transaction():
-                        revoked = db.execute(
-                            "DELETE FROM password_reset_tokens "
-                            "WHERE user_id = %s AND token_hash = %s "
-                            "RETURNING user_id",
-                            (user["id"], token_hash),
-                        ).fetchone()
-                        if revoked:
-                            db.execute(
-                                "UPDATE users SET reset_requested_at = NULL "
-                                "WHERE id = %s",
-                                (user["id"],),
-                            )
-            message = (
-                "If an account matches and email delivery is available, "
-                "you will receive a reset link. If it does not arrive, wait "
-                "five minutes before trying again."
-            )
+            else:
+                db = get_db()
+                user = db.execute(
+                    "UPDATE users SET reset_requested_at = now() "
+                    "WHERE email = %s AND (reset_requested_at IS NULL OR "
+                    "reset_requested_at < now() - interval '5 minutes') "
+                    "RETURNING id",
+                    (email,),
+                ).fetchone()
+                if user:
+                    token = secrets.token_urlsafe(32)
+                    token_hash = reset_token_hash(token)
+                    db.execute(
+                        "INSERT INTO password_reset_tokens "
+                        "(user_id, token_hash, expires_at) "
+                        "VALUES (%s, %s, now() + interval '30 minutes') "
+                        "ON CONFLICT (user_id) DO UPDATE SET "
+                        "token_hash = EXCLUDED.token_hash, "
+                        "expires_at = EXCLUDED.expires_at",
+                        (user["id"], token_hash),
+                    )
+                    db.commit()
+                    try:
+                        send_reset_email(email, token)
+                    except (OSError, smtplib.SMTPException, RuntimeError):
+                        app.logger.exception("Could not send password reset email.")
+                        with db.transaction():
+                            revoked = db.execute(
+                                "DELETE FROM password_reset_tokens "
+                                "WHERE user_id = %s AND token_hash = %s "
+                                "RETURNING user_id",
+                                (user["id"], token_hash),
+                            ).fetchone()
+                            if revoked:
+                                db.execute(
+                                    "UPDATE users SET reset_requested_at = NULL "
+                                    "WHERE id = %s",
+                                    (user["id"],),
+                                )
+                message = (
+                    "If an account matches and email delivery is available, "
+                    "you will receive a reset link. If it does not arrive, wait "
+                    "five minutes before trying again."
+                )
     return render_template(
-        "forgot_password.html", message=message
+        "forgot_password.html", message=message,
+        reset_email_configured=RESET_EMAIL_CONFIGURED,
     )
 
 
