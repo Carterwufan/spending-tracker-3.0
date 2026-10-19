@@ -10,3 +10,5 @@ services:
         generateValue: true
       - key: DATABASE_URL
         sync: false
+      - key: ALLOW_REGISTRATION
+        value: "0"

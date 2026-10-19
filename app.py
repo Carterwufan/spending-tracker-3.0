@@ -11,8 +11,8 @@ from functools import wraps
 from urllib.parse import urlsplit
 
 import psycopg
-from flask import (Flask, g, jsonify, redirect, render_template, request,
-                   session, url_for)
+from flask import (Flask, abort, g, jsonify, redirect, render_template,
+                   request, session, url_for)
 from psycopg.rows import dict_row
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -25,6 +25,7 @@ except ImportError:
     pass  # on a host, settings come from real environment variables
 
 LOCAL_DEV = os.environ.get("LOCAL_DEV") == "1"
+ALLOW_REGISTRATION = os.environ.get("ALLOW_REGISTRATION") == "1"
 DATABASE_URL = os.environ.get("DATABASE_URL")
 if not DATABASE_URL:
     raise RuntimeError("Set DATABASE_URL to your Neon PostgreSQL connection string.")
@@ -277,11 +278,14 @@ def login():
             csrf_token()
             return redirect(url_for("index"))
         error = "That email or password is incorrect."
-    return render_template("login.html", error=error)
+    return render_template("login.html", error=error,
+                           allow_registration=ALLOW_REGISTRATION)
 
 
 @app.route("/register", methods=["GET", "POST"])
 def register():
+    if not ALLOW_REGISTRATION:
+        abort(404)
     error = None
     if request.method == "POST":
         email = request.form.get("email", "").strip().casefold()
