@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Account | Spending Tracker</title>
+  <meta name="theme-color" content="#1f6f54">
+  <script src="{{ url_for('static', filename='consent.js') }}"></script>
+  <script src="{{ url_for('static', filename='theme.js') }}"></script>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<main>
+  <header><h1>Spending Tracker</h1></header>
+  <section>
+    <h2>Your account</h2>
+    <p class="muted">Signed in as {{ email }}</p>
+    <nav class="auth-links" aria-label="Account">
+      <a href="{{ url_for('index') }}">Back to your transactions</a>
+    </nav>
+  </section>
+
+  <section aria-labelledby="export-title">
+    <h2 id="export-title">Download your data</h2>
+    <p class="muted auth-description">Get a CSV file of every transaction stored in your account.</p>
+    <a class="button-link" href="{{ url_for('export_data') }}" download>Download CSV</a>
+  </section>
+
+  <section aria-labelledby="delete-title">
+    <h2 id="delete-title">Delete your account</h2>
+    <p class="muted auth-description">This permanently deletes your account and all of its transactions. It cannot be undone.</p>
+    <form method="post" action="{{ url_for('delete_account') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label>Current password
+        <input type="password" name="password" required autocomplete="current-password">
+      </label>
+      <label class="checkbox">
+        <input type="checkbox" name="confirm" value="yes" required>
+        I understand my account and data will be permanently deleted.
+      </label>
+      {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+      <button class="destructive" type="submit">Delete account</button>
+    </form>
+  </section>
+</main>
+{% include "_site_footer.html" %}
+</body>
+</html>

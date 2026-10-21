@@ -1,3 +1,5 @@
+import csv
+import io
 import math
 import os
 import re
@@ -11,8 +13,8 @@ from functools import wraps
 from urllib.parse import urlsplit
 
 import psycopg
-from flask import (Flask, abort, g, jsonify, redirect, render_template,
-                   request, session, url_for)
+from flask import (Flask, Response, abort, g, jsonify, redirect,
+                   render_template, request, session, url_for)
 from psycopg.rows import dict_row
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -42,6 +44,7 @@ SMTP_USERNAME = os.environ.get("SMTP_USERNAME")
 SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD")
 SMTP_FROM = os.environ.get("SMTP_FROM")
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
+CONTACT_EMAIL = os.environ.get("CONTACT_EMAIL", "").strip()
 RESET_EMAIL_CONFIGURED = (
     bool(SMTP_HOST and SMTP_FROM and PUBLIC_BASE_URL)
     and bool(SMTP_USERNAME) == bool(SMTP_PASSWORD)
@@ -66,6 +69,9 @@ app = Flask(__name__)
 app.config.update(
     SECRET_KEY=SECRET_KEY,
     MAX_CONTENT_LENGTH=16 * 1024,
+    # The __Host- prefix makes browsers reject the cookie unless it is Secure,
+    # host-only, and scoped to "/", so it cannot be planted by a subdomain.
+    SESSION_COOKIE_NAME="session" if LOCAL_DEV else "__Host-session",
     SESSION_COOKIE_SECURE=not LOCAL_DEV,
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
@@ -102,6 +108,31 @@ RESET_TOKENS_SCHEMA = """CREATE TABLE IF NOT EXISTS password_reset_tokens (
     expires_at TIMESTAMPTZ NOT NULL
 )"""
 
+LOGIN_ATTEMPTS_SCHEMA = """CREATE TABLE IF NOT EXISTS login_attempts (
+    email TEXT PRIMARY KEY,
+    failures INTEGER NOT NULL,
+    first_failed_at TIMESTAMPTZ NOT NULL
+)"""
+
+LOGIN_MAX_FAILURES = 5
+LOGIN_LOCKED_MESSAGE = (
+    "Too many incorrect attempts. Wait 15 minutes, or reset your password."
+)
+
+CONTENT_SECURITY_POLICY = "; ".join([
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self'",
+    "img-src 'self'",
+    "connect-src 'self'",
+    "manifest-src 'self'",
+    "worker-src 'self'",
+    "object-src 'none'",
+    "base-uri 'none'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+] + ([] if LOCAL_DEV else ["upgrade-insecure-requests"]))
+
 _DUMMY_PASSWORD_HASH = generate_password_hash(
     secrets.token_urlsafe(32), method="scrypt"
 )
@@ -117,6 +148,7 @@ def init_db():
     with connect() as con:   # commits and closes on exit
         con.execute(USERS_SCHEMA)
         con.execute(RESET_TOKENS_SCHEMA)
+        con.execute(LOGIN_ATTEMPTS_SCHEMA)
         con.execute(SCHEMA)
         con.execute(
             "ALTER TABLE expenses ADD COLUMN IF NOT EXISTS user_id "
@@ -212,6 +244,17 @@ def set_security_headers(response):
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Content-Security-Policy"] = CONTENT_SECURITY_POLICY
+    response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+    response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+    response.headers["Permissions-Policy"] = (
+        "camera=(), microphone=(), geolocation=(), payment=(), usb=(), "
+        "browsing-topics=()"
+    )
+    if not LOCAL_DEV:
+        response.headers["Strict-Transport-Security"] = (
+            "max-age=31536000; includeSubDomains"
+        )
     return response
 
 
@@ -220,6 +263,47 @@ def valid_email(value):
         len(value) <= 254
         and re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", value) is not None
     )
+
+
+def login_locked(db, email):
+    return db.execute(
+        "SELECT 1 FROM login_attempts WHERE email = %s AND failures >= %s "
+        "AND first_failed_at > now() - interval '15 minutes'",
+        (email, LOGIN_MAX_FAILURES),
+    ).fetchone() is not None
+
+
+def record_login_failure(db, email):
+    # Failures are counted per email, whether or not an account exists, so the
+    # lockout does not reveal which emails are registered.
+    db.execute(
+        "INSERT INTO login_attempts (email, failures, first_failed_at) "
+        "VALUES (%s, 1, now()) ON CONFLICT (email) DO UPDATE SET "
+        "failures = CASE WHEN login_attempts.first_failed_at > "
+        "now() - interval '15 minutes' THEN login_attempts.failures + 1 "
+        "ELSE 1 END, "
+        "first_failed_at = CASE WHEN login_attempts.first_failed_at > "
+        "now() - interval '15 minutes' THEN login_attempts.first_failed_at "
+        "ELSE now() END",
+        (email,),
+    )
+    db.execute(
+        "DELETE FROM login_attempts "
+        "WHERE first_failed_at < now() - interval '1 day'"
+    )
+    db.commit()
+
+
+def clear_login_failures(db, email):
+    db.execute("DELETE FROM login_attempts WHERE email = %s", (email,))
+    db.commit()
+
+
+def spreadsheet_safe(value):
+    # Stop spreadsheet apps from running exported text as a formula.
+    if value.startswith(("=", "+", "-", "@", "\t", "\r")):
+        return "'" + value
+    return value
 
 
 def reset_token_hash(token):
@@ -259,26 +343,36 @@ def send_reset_email(email, token):
 @app.route("/login", methods=["GET", "POST"])
 def login():
     error = None
+    notice = None
+    if request.args.get("deleted") == "1":
+        notice = "Your account and all of its data have been deleted."
     if request.method == "POST":
         email = request.form.get("email", "").strip().casefold()
         supplied = request.form.get("password", "")
+        db = get_db()
+        if valid_email(email) and login_locked(db, email):
+            return render_template("login.html", error=LOGIN_LOCKED_MESSAGE,
+                                   allow_registration=ALLOW_REGISTRATION), 429
         user = None
         if valid_email(email):
-            user = get_db().execute(
+            user = db.execute(
                 "SELECT id, password_hash, auth_version FROM users "
                 "WHERE email = %s", (email,)
             ).fetchone()
         stored_hash = user["password_hash"] if user else _DUMMY_PASSWORD_HASH
         password_matches = check_password_hash(stored_hash, supplied)
         if user and password_matches:
+            clear_login_failures(db, email)
             session.clear()
             session["user_id"] = user["id"]
             session["auth_version"] = user["auth_version"]
             session.permanent = True
             csrf_token()
             return redirect(url_for("index"))
+        if valid_email(email):
+            record_login_failure(db, email)
         error = "That email or password is incorrect."
-    return render_template("login.html", error=error,
+    return render_template("login.html", error=error, notice=notice,
                            allow_registration=ALLOW_REGISTRATION)
 
 
@@ -424,6 +518,11 @@ def reset_password():
                             reset["user_id"],
                         ),
                     )
+                    db.execute(
+                        "DELETE FROM login_attempts WHERE email = "
+                        "(SELECT email FROM users WHERE id = %s)",
+                        (reset["user_id"],),
+                    )
             db.commit()
             if reset:
                 return render_template("reset_password.html", success=True)
@@ -444,6 +543,78 @@ def logout():
 @login_required
 def index():
     return render_template("index.html")
+
+
+@app.get("/privacy")
+def privacy():
+    return render_template(
+        "privacy.html", contact_email=CONTACT_EMAIL,
+        reset_email_configured=RESET_EMAIL_CONFIGURED,
+    )
+
+
+@app.get("/account")
+@login_required
+def account():
+    user = get_db().execute(
+        "SELECT email FROM users WHERE id = %s", (session["user_id"],)
+    ).fetchone()
+    return render_template("account.html", email=user["email"])
+
+
+@app.get("/account/export")
+@login_required
+def export_data():
+    rows = get_db().execute(
+        "SELECT spent_on, transaction_type, category, amount_cents, note "
+        "FROM expenses WHERE user_id = %s ORDER BY spent_on, id",
+        (session["user_id"],),
+    ).fetchall()
+    out = io.StringIO()
+    writer = csv.writer(out)
+    writer.writerow(["date", "type", "category", "amount", "note"])
+    for r in rows:
+        dollars, cents = divmod(r["amount_cents"], 100)
+        writer.writerow([
+            r["spent_on"].isoformat(), r["transaction_type"],
+            spreadsheet_safe(r["category"]), f"{dollars}.{cents:02d}",
+            spreadsheet_safe(r["note"]),
+        ])
+    return Response(
+        out.getvalue(), mimetype="text/csv",
+        headers={"Content-Disposition":
+                 'attachment; filename="spending-tracker-export.csv"'},
+    )
+
+
+@app.post("/account/delete")
+@login_required
+def delete_account():
+    db = get_db()
+    user = db.execute(
+        "SELECT email, password_hash FROM users WHERE id = %s",
+        (session["user_id"],),
+    ).fetchone()
+    error = None
+    if request.form.get("confirm") != "yes":
+        error = "Tick the box to confirm you want to delete your account."
+    elif login_locked(db, user["email"]):
+        error = LOGIN_LOCKED_MESSAGE
+    elif not check_password_hash(user["password_hash"],
+                                 request.form.get("password", "")):
+        record_login_failure(db, user["email"])
+        error = "That password is incorrect."
+    if error:
+        return render_template("account.html", email=user["email"],
+                               error=error), 400
+    with db.transaction():
+        db.execute("DELETE FROM login_attempts WHERE email = %s",
+                   (user["email"],))
+        # Expenses and reset tokens are removed by ON DELETE CASCADE.
+        db.execute("DELETE FROM users WHERE id = %s", (session["user_id"],))
+    db.commit()
+    session.clear()
+    return redirect(url_for("login", deleted=1))
 
 
 @app.get("/api/expenses")

@@ -1,7 +1,10 @@
-const CACHE_NAME = "spending-tracker-shell-v2";
+const CACHE_NAME = "spending-tracker-shell-v3";
 const SHELL_ASSETS = [
   "/static/style.css",
+  "/static/consent.js",
   "/static/theme.js",
+  "/static/app.js",
+  "/static/register-sw.js",
   "/static/manifest.webmanifest",
   "/static/icon.svg",
 ];

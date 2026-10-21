@@ -12,3 +12,5 @@ services:
         sync: false
       - key: ALLOW_REGISTRATION
         value: "0"
+      - key: CONTACT_EMAIL
+        sync: false

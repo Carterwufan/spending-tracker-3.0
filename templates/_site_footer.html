@@ -1,0 +1,14 @@
+<footer class="site-footer">
+  <a href="{{ url_for('privacy') }}">Privacy &amp; cookies</a>
+  <button id="cookie-settings" class="quiet" type="button">Cookie settings</button>
+</footer>
+<div id="cookie-banner" class="cookie-banner" role="region" aria-labelledby="cookie-banner-title" hidden>
+  <p id="cookie-banner-title"><strong>Cookie preferences</strong></p>
+  <p>We use an essential cookie to keep you signed in and protect forms. With your
+    permission, we also remember your light or dark display theme on this device.
+    <a href="{{ url_for('privacy') }}#cookies">Learn more</a></p>
+  <div class="cookie-actions">
+    <button type="button" data-consent="essential">Essential only</button>
+    <button type="button" data-consent="preferences">Allow preferences</button>
+  </div>
+</div>

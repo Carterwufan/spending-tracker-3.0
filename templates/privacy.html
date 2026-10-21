@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Privacy &amp; cookies | Spending Tracker</title>
+  <meta name="theme-color" content="#1f6f54">
+  <script src="{{ url_for('static', filename='consent.js') }}"></script>
+  <script src="{{ url_for('static', filename='theme.js') }}"></script>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<main class="prose">
+  <header><h1>Spending Tracker</h1></header>
+  <section>
+    <h2>Privacy &amp; cookies</h2>
+    <p class="muted">Last updated October 21, 2026</p>
+    <nav class="auth-links" aria-label="Account">
+      <a href="{{ url_for('index') }}">Back to Spending Tracker</a>
+    </nav>
+  </section>
+
+  <section aria-labelledby="collect-title">
+    <h2 id="collect-title">What we store</h2>
+    <ul>
+      <li><strong>Account details:</strong> your email address and a one-way scrypt
+        hash of your password. Your actual password is never stored.</li>
+      <li><strong>Transactions:</strong> the dates, types, categories, amounts and
+        notes you enter.</li>
+      <li><strong>Security records:</strong> a count of recent failed sign-in attempts
+        for an email address (kept up to one day), and, if you reset your password,
+        the time of the request and a hashed one-time token that expires after 30
+        minutes.</li>
+    </ul>
+    <p>We use this information only to run the app for you. We do not sell it, show
+      ads, or use analytics or tracking services.</p>
+  </section>
+
+  <section aria-labelledby="cookies-title" id="cookies">
+    <h2 id="cookies-title">Cookies and device storage</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th scope="col">Name</th><th scope="col">Purpose</th><th scope="col">Kind</th><th scope="col">Lasts</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>{{ config.SESSION_COOKIE_NAME }}</code> (cookie)</td>
+            <td>Keeps you signed in and holds the token that protects forms from forgery.</td>
+            <td>Essential</td><td>30 days, or until you log out</td></tr>
+          <tr><td><code>cookie_consent</code> (cookie)</td>
+            <td>Remembers your cookie choice so we don't ask again.</td>
+            <td>Essential</td><td>180 days</td></tr>
+          <tr><td><code>spending-tracker-theme</code> (local storage)</td>
+            <td>Remembers whether you chose light or dark mode.</td>
+            <td>Preference, only with your permission</td><td>Until you withdraw permission or clear site data</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Essential cookies are needed for the app to work and are always on. You can
+      change your choice for preference storage at any time with
+      <strong>Cookie settings</strong> at the bottom of every page. Choosing
+      <strong>Essential only</strong> erases a saved theme. The app may also keep a
+      copy of its stylesheet, scripts and icon on your device so it loads faster;
+      these files contain no personal information.</p>
+  </section>
+
+  <section aria-labelledby="share-title">
+    <h2 id="share-title">Who processes your data</h2>
+    <p>The app is hosted on Render and its database is hosted on Neon. Both process
+      data only to provide hosting.{% if reset_email_configured %} Password reset
+      emails are sent through our email provider.{% endif %} Connections to the app
+      and the database are encrypted.</p>
+  </section>
+
+  <section aria-labelledby="rights-title">
+    <h2 id="rights-title">Your choices</h2>
+    <ul>
+      <li>Download a copy of your transactions from the <a href="{{ url_for('account') }}">Account</a> page.</li>
+      <li>Delete your account from the same page. This permanently removes your
+        account and all of its transactions.</li>
+      <li>Delete individual transactions at any time from the main page.</li>
+    </ul>
+    <p>Your data is kept until you delete it or your account.</p>
+  </section>
+
+  <section aria-labelledby="contact-title">
+    <h2 id="contact-title">Contact</h2>
+    {% if contact_email %}
+      <p>For privacy questions or requests, email <a href="mailto:{{ contact_email }}">{{ contact_email }}</a>.</p>
+    {% else %}
+      <p>For privacy questions or requests, contact the administrator of this app.</p>
+    {% endif %}
+  </section>
+</main>
+{% include "_site_footer.html" %}
+</body>
+</html>
