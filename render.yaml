@@ -11,6 +11,6 @@ services:
       - key: DATABASE_URL
         sync: false
       - key: ALLOW_REGISTRATION
-        value: "0"
+        value: "1"
       - key: CONTACT_EMAIL
         sync: false
