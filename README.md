@@ -7,7 +7,7 @@
    `LOCAL_DEV=1` to allow the app's local HTTP session cookie. Locally, if
    `SECRET_KEY` is omitted, the app generates a random key at startup; this
    invalidates sessions whenever the app restarts.
-3. Start the app with `python app.py`. Account registration is off by default;
+3. Start the app with `python app.py`. Account registration is off by default; 
    set `ALLOW_REGISTRATION=1` to show "Create an account" on the login page,
    create your account, then remove the setting to close sign-ups again.
    Account passwords are stored as Werkzeug scrypt hashes.
