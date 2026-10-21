@@ -67,3 +67,26 @@ in; create a new account to use the app.
 Each account has its own expenses. Database queries bind user-provided values
 as SQL parameters and restrict reads, inserts, and deletes to the signed-in
 account.
+
+## Privacy, cookies, and security headers
+
+- **Cookie consent.** A banner on every page offers **Essential only** or
+  **Allow preferences**, and **Cookie settings** in the footer reopens it. The
+  session cookie and the `cookie_consent` choice cookie are essential. The saved
+  light/dark theme is stored only with permission, and is erased if permission
+  is withdrawn.
+- **Privacy & cookies page** at `/privacy` lists what is stored, every cookie,
+  and the hosting providers. Set the optional `CONTACT_EMAIL` environment
+  variable to show a privacy contact address there. Review the page and adjust
+  it to your situation before inviting other users.
+- **Account page** at `/account` lets users download their transactions as CSV
+  and permanently delete their account, which requires their password.
+- **Login throttling.** After 5 incorrect passwords for an email within 15
+  minutes, sign-in for that email is paused until 15 minutes after the first
+  failure. Resetting the password clears the pause.
+- **Headers.** Responses send a strict `Content-Security-Policy` (scripts and
+  styles only from `/static`, no inline scripts), `Permissions-Policy`,
+  `Cross-Origin-Opener-Policy`, and `Cross-Origin-Resource-Policy`. In
+  production they also send `Strict-Transport-Security`, and the session cookie
+  is named `__Host-session`. Keep page scripts in `static/` files; inline
+  `<script>` blocks are blocked by the policy.

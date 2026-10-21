@@ -11,6 +11,7 @@
   <link rel="manifest" href="{{ url_for('static', filename='manifest.webmanifest') }}">
   <link rel="icon" href="{{ url_for('static', filename='icon.svg') }}" type="image/svg+xml">
   <link rel="apple-touch-icon" href="{{ url_for('static', filename='icon.svg') }}">
+  <script src="{{ url_for('static', filename='consent.js') }}"></script>
   <script src="{{ url_for('static', filename='theme.js') }}"></script>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
@@ -26,6 +27,7 @@
       <label>Password
         <input type="password" name="password" required autocomplete="current-password">
       </label>
+      {% if notice %}<p class="muted" role="status">{{ notice }}</p>{% endif %}
       {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
       <button type="submit">Log in</button>
     </form>
@@ -35,14 +37,7 @@
     </nav>
   </section>
 </main>
-<script>
-if ("serviceWorker" in navigator) {
-  window.addEventListener("load", () => {
-    navigator.serviceWorker.register("/service-worker.js").catch((err) => {
-      console.error("Could not register the service worker:", err);
-    });
-  });
-}
-</script>
+{% include "_site_footer.html" %}
+<script src="{{ url_for('static', filename='register-sw.js') }}"></script>
 </body>
 </html>
